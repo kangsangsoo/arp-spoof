@@ -49,7 +49,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	for(auto i = ARPtable.begin(); i != ARPtable.end(); i++) {
-		cout << string(i->first) << ' ' << string(i->second) << endl;
+		cout << string(i->first) << ' ' << uint32_t(i->first) << ' ' << string(i->second) << endl;
 	}
 
 	// infection 실행
@@ -65,7 +65,8 @@ int main(int argc, char* argv[]) {
 	// ARP 패킷일 경우 => 감염으로 대응해줘야 함
 	// 1초당 1번씩 보내고 있을 때 그닥 걱정은 안됨
 	// 더 큰 주기로 보낸다 했을 때 ARP Table 복구를 염두해야함.
-	 
+
+	watchPacket(handle, ARPtable, IpTable, me);
 
 
 
