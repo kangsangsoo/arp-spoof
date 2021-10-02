@@ -279,10 +279,13 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 			for(auto i : IpTable) {
 				// sender 확인
 				if(header.eth_.smac_ == ARPtable.find(i.first)->second) {
-					// src mac만 me로 바꿔서 보냄
+					// src mac me로 바꿔서 보냄
+					// dst mac 을 target꺼로
 					memcpy(paste_packet, packet, pkheader->len);
 					Mac myMac = ARPtable.find(me)->second;
 					memcpy(&paste_packet[6], &myMac, 6);
+					Mac tMac = ARPtable.find(i.second)->second;
+					memcpy(paste_packet, &tMac, 6);
 					//cout << paste_packet[6] << endl;
 					// sendARP(header, handle, 1, 0);
 					// critical section
