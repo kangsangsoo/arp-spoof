@@ -20,12 +20,12 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 	
-	// unordered_map vs map
 	std::map<Ip, Mac> ARPtable;
 	getMyInfo(dev, ARPtable);
 	Ip sender, target, me = getMyIp(dev);
 
 	int now = 2;
+
 
 	// 전처리를 하자 
 	// resolve를 미리 다 해놓자
@@ -48,14 +48,16 @@ int main(int argc, char* argv[]) {
 	for(auto i = IpTable.begin(); i != IpTable.end(); i++) {
 		cout << string(i->first) << ' '  << string(i->second) << endl;
 	}
-	//
-	std::thread::native_handle_type t_set[100];
 
 	// infection 실행
 	cout << "infection start" << endl;
-	for(int i = 0; i < IpTable.size(); i++) {
-		t_set[i] = infection(handle, ARPtable, me, IpTable[i].first, IpTable[i].second, 5, 1);
+	for(auto i : IpTable) {
+		infectionPacket.push_back(fillPacket(ARPtable[me], ARPtable[i.first], ARPtable[me], i.second, ARPtable[i.first], i.first, ArpHdr::Reply));
 	}
+	pthread_t t;
+	int tid = pthread_create(&t, NULL, infection, (void*)handle);
+
+
 
 	// watchPacket으로
 	// IP 패킷일 경우 => flow로 
@@ -65,30 +67,19 @@ int main(int argc, char* argv[]) {
 	// 종료는 ctrl + c로 signal 보내서 가능
 	watchPacket(handle, ARPtable, IpTable, me); // while 조건문 1로 해둠
 	
-	// 10초 대기
-	// auto startTime = std::chrono::system_clock::now();
-	// while (1) {
-	// 	auto endTime = std::chrono::system_clock::now();
-	// 	auto diff = std::chrono::duration_cast<std::chrono::seconds>(endTime-startTime);
-	// 	if(diff.count() > 10) {
-	// 		break;
-	// 	}
-	// }
 
 	cout << "infection end" << endl;
 	
-
-	for(int i = 0; i < IpTable.size(); i++) {
-		pthread_cancel(t_set[i]);
-		pthread_join(t_set[i], NULL);
-	}
+	pthread_join(tid, NULL);
 
 	cout << "recover start" << endl;
-	findFlag = 0;
 
-	for(int i = 0; i < IpTable.size(); i++) {
-		recover(handle, ARPtable, IpTable[i].first, IpTable[i].second);
+
+
+	for(auto i : IpTable) {
+		recover(handle, ARPtable, i.first, i.second);
 	}
+
 
 	cout << "program end" << endl;
 	// handle이 먼저 종료되면 기존에 handle로 처리한더거 처리 못함
