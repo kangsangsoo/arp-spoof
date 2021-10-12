@@ -12,6 +12,12 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
+	/*
+	Ip test = 1234;
+	cout << test << endl;
+	return 0;
+	*/
+
 	char* dev = argv[1];
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
@@ -22,17 +28,16 @@ int main(int argc, char* argv[]) {
 	
 	std::map<Ip, Mac> ARPtable;
 	getMyInfo(dev, ARPtable);
-	Ip sender, target, me = getMyIp(dev);
+	Ip sender, target;
+	Ip me = getMyIp(dev);
 
 	int now = 2;
-
 
 	// 전처리를 하자 
 	// resolve를 미리 다 해놓자
 	std::vector <pair<Ip, Ip>> IpTable; // {sender, target}
 	while(now < argc) {
 		initArg(&argv[now], sender, target);
-
 
 		// 사용자가 입력을 이상하게 했을 경우?? 고려해야하나?
 		// 동일한 {sender, target} 쌍이 들어온다면?
@@ -49,6 +54,7 @@ int main(int argc, char* argv[]) {
 			}
 
 		}
+
 		if(dup_flag) continue;
 
 
@@ -61,7 +67,6 @@ int main(int argc, char* argv[]) {
 
 		now = now + 2;
 	}
-
 	#ifdef DEBUG
 	for(auto i = ARPtable.begin(); i != ARPtable.end(); i++) {
 		cout << string(i->first) << ' ' << uint32_t(i->first) << ' ' << string(i->second) << endl;
@@ -81,6 +86,10 @@ int main(int argc, char* argv[]) {
 
 
 
+
+
+
+
 	// watchPacket으로
 	// IP 패킷일 경우 => flow로 
 	// ARP 패킷일 경우 => 감염으로 대응해줘야 함
@@ -96,11 +105,9 @@ int main(int argc, char* argv[]) {
 	cout << "recover start" << endl;
 	#endif
 
-
 	for(auto i : IpTable) {
 		recover(handle, ARPtable, i.first, i.second);
 	}
-
 
 	cout << "exit" << endl;
 	// handle이 먼저 종료되면 기존에 handle로 처리한더거 처리 못함
