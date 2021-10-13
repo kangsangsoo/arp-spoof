@@ -1,6 +1,8 @@
 # arp-spoof
 
-> usage: sudo ./arp-spoof (your dev) A B B A ....
+> usage: sudo ./arp-spoof (your dev) A B B A ....    
+        
+![command](https://user-images.githubusercontent.com/63638850/137100399-d1274848-ddf2-46b7-9ef1-a9848a85db93.PNG)     
 
 ### ping 8.8.8.8    
 ![PING](https://user-images.githubusercontent.com/63638850/137094482-63d21267-856c-4ec7-8366-33205bba80d9.PNG)
