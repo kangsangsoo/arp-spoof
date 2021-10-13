@@ -1,5 +1,7 @@
 # arp-spoof
 
+usage: ./arp-spoof dev A B B A ....
+
 ### ping 8.8.8.8    
 ![PING](https://user-images.githubusercontent.com/63638850/137094482-63d21267-856c-4ec7-8366-33205bba80d9.PNG)
 
