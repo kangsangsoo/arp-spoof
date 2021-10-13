@@ -26,9 +26,6 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-
-	// 전처리를 하자 
-	// resolve를 미리 다 해놓자
 	std::vector <pair<Ip, Ip>> IpTable; // {sender, target}
 	Ip sender, target;
 	int now = 2;
@@ -42,9 +39,7 @@ int main(int argc, char* argv[]) {
 		for(auto i : IpTable) {
 			if(i.first == sender && i.second == target) {
 				dup_flag = 1;
-				#ifdef DEBUG
-				cout << "dup find" << endl;
-				#endif
+				cout << string(sender) << ' ' << string(target) << " already exists" << endl;
 				now = now + 2;
 				break;
 			}
@@ -59,38 +54,29 @@ int main(int argc, char* argv[]) {
 
 		now = now + 2;
 	}
-	#ifdef DEBUG
-	for(auto i = ARPtable.begin(); i != ARPtable.end(); i++) {
-		cout << string(i->first) << ' ' << uint32_t(i->first) << ' ' << string(i->second) << endl;
-	}
-	for(auto i = IpTable.begin(); i != IpTable.end(); i++) {
-		cout << string(i->first) << ' '  << string(i->second) << endl;
-	}
+
 	cout << "infection start" << endl;
-	#endif
-
-
-
 	// infection 실행
 	for(auto i : IpTable) {
 		infectionPacket.push_back(fillPacket(ARPtable[me], ARPtable[i.first], ARPtable[me], i.second, ARPtable[i.first], i.first, ArpHdr::Reply));
 	}
 	pthread_t t;
-	Pthread_create(&t, NULL, infection, (void*)handle); // assert
+	assert(pthread_create(&t, NULL, infection, (void*)handle) == 0);
 
+	cout << "watch start" << endl;
 	watchPacket(handle, ARPtable, IpTable, me); 
-	
+	cout << "watch end" << endl;
+
 	cout << "infection end" << endl;
-	pthread_cancel(t);
-	Pthread_join(t, NULL);
+	assert(pthread_cancel(t) == 0);
+	assert(pthread_join(t, NULL) == 0);
 	cout << "recover start" << endl;
 
 	for(auto i : IpTable) {
 		recover(handle, ARPtable, i.first, i.second);
 	}
-
+	cout << "recover end" << endl;
 	cout << "exit" << endl;
-	// handle이 먼저 종료되면 기존에 handle로 처리한더거 처리 못함
 	pcap_close(handle);
 	return 0;
 }
